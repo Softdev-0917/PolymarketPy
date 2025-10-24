@@ -479,10 +479,36 @@ class PolyTradingClient:
             order_sigtype_str = dict(order_sig_std)
             order_sigtype_str["signatureType"] = sigtype_str
             bodies.append(("A5", {"order": order_sigtype_str, "owner": self.api_key, "orderType": order_type}))
-        # Omit signatureType (server may infer)
+        # Omit signatureType
         order_no_sigtype = dict(order_sig_std)
         order_no_sigtype.pop("signatureType", None)
         bodies.append(("A6", {"order": order_no_sigtype, "owner": self.api_key, "orderType": order_type}))
+        # Numeric fields as numbers (keep tokenId as string)
+        def to_int(s):
+            try:
+                return int(str(s))
+            except Exception:
+                return s
+        order_numerics = dict(order_sig_std)
+        for k in ("salt", "makerAmount", "takerAmount", "expiration", "nonce", "feeRateBps"):
+            if k in order_numerics:
+                order_numerics[k] = to_int(order_numerics[k])
+        bodies.append(("N1", {"order": order_numerics, "owner": self.api_key, "orderType": order_type}))
+        # Numeric fields + side as int
+        order_numerics_side = dict(order_numerics)
+        try:
+            order_numerics_side["side"] = 0 if str(order_sig_std.get("side")).upper() == "BUY" else 1
+        except Exception:
+            pass
+        bodies.append(("N2", {"order": order_numerics_side, "owner": self.api_key, "orderType": order_type}))
+        # Remove exchangeAddr from JSON (some servers don't want it in HTTP)
+        order_no_ex = dict(order_sig_std)
+        order_no_ex.pop("exchangeAddr", None)
+        bodies.append(("X0", {"order": order_no_ex, "owner": self.api_key, "orderType": order_type}))
+        # Remove exchangeAddr with numeric fields
+        order_numerics_no_ex = dict(order_numerics)
+        order_numerics_no_ex.pop("exchangeAddr", None)
+        bodies.append(("X1", {"order": order_numerics_no_ex, "owner": self.api_key, "orderType": order_type}))
         # Remaining original variants
         bodies.append(("B", {"order": dict(order_side_int, signature=order_sig_std.get("signature")), "owner": self.api_key, "orderType": order_type}))
         bodies.append(("C", {"order": order_sig_std, "owner": self.signer_address, "orderType": order_type}))
