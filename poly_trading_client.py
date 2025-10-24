@@ -330,25 +330,76 @@ class PolyTradingClient:
 
     def place_order(self, order: Dict[str, Any], order_type: str, client_id: Optional[str] = None) -> Tuple[int, str]:
         path = "/order"
-        body = {"order": order, "owner": self.api_key, "orderType": order_type}
-        if client_id:
-            body["client_id"] = client_id
-        body_str = json.dumps(body, separators=(",", ":"))
+        # Prepare side variants
+        order_side_int = dict(order)
+        try:
+            side_val = order_side_int.get("side")
+            order_side_int["side"] = 0 if str(side_val).upper() == "BUY" else 1 if str(side_val).upper() == "SELL" else side_val
+        except Exception:
+            pass
 
-        ts = str(int(time.time()))
-        sig = self._l2_signature(ts, "POST", path, body_str)
+        # Prepare signature variants (std v=27/28 vs adjusted v=0/1)
+        def adjust_v(sig_hex: str) -> str:
+            if len(sig_hex) == 132:
+                v_hex = sig_hex[130:132]
+                v = int(v_hex, 16)
+                if v >= 27:
+                    v -= 27
+                    return sig_hex[:130] + f"{v:02x}"
+            return sig_hex
 
-        url = f"{self.base_url}{path}"
-        headers = {
-            "POLY_API_KEY": self.api_key,
-            "POLY_PASSPHRASE": self.api_passphrase,
-            "POLY_TIMESTAMP": ts,
-            "POLY_ADDRESS": self.signer_address,
-            "POLY_SIGNATURE": sig,
-            "Content-Type": "application/json",
-        }
-        r = self.http.post(url, headers=headers, data=body_str, timeout=30)
-        return r.status_code, r.text
+        order_sig_std = dict(order)
+        order_sig_adj = dict(order)
+        try:
+            order_sig_adj["signature"] = adjust_v(order_sig_adj.get("signature", ""))
+        except Exception:
+            pass
+
+        bodies = []
+        # A: BUY/SELL, owner=api_key, sig std
+        bodies.append(("A", {"order": order_sig_std, "owner": self.api_key, "orderType": order_type}))
+        # B: 0/1, owner=api_key, sig std
+        bodies.append(("B", {"order": dict(order_side_int, signature=order_sig_std.get("signature")), "owner": self.api_key, "orderType": order_type}))
+        # C: BUY/SELL, owner=signer, sig std
+        bodies.append(("C", {"order": order_sig_std, "owner": self.signer_address, "orderType": order_type}))
+        # D: 0/1, owner=signer, sig std
+        bodies.append(("D", {"order": dict(order_side_int, signature=order_sig_std.get("signature")), "owner": self.signer_address, "orderType": order_type}))
+        # E: BUY/SELL, owner=api_key, sig adj v
+        bodies.append(("E", {"order": order_sig_adj, "owner": self.api_key, "orderType": order_type}))
+        # F: 0/1, owner=api_key, sig adj v
+        bodies.append(("F", {"order": dict(order_side_int, signature=order_sig_adj.get("signature")), "owner": self.api_key, "orderType": order_type}))
+        # G: BUY/SELL, owner=signer, sig adj v
+        bodies.append(("G", {"order": order_sig_adj, "owner": self.signer_address, "orderType": order_type}))
+        # H: 0/1, owner=signer, sig adj v
+        bodies.append(("H", {"order": dict(order_side_int, signature=order_sig_adj.get("signature")), "owner": self.signer_address, "orderType": order_type}))
+
+        last_status, last_text = 0, ""
+        for label, body in bodies:
+            b = dict(body)
+            if client_id:
+                b["client_id"] = client_id
+            body_str = json.dumps(b, separators=(",", ":"))
+
+            ts = str(int(time.time()))
+            sig = self._l2_signature(ts, "POST", path, body_str)
+
+            url = f"{self.base_url}{path}"
+            headers = {
+                "POLY_API_KEY": self.api_key,
+                "POLY_PASSPHRASE": self.api_passphrase,
+                "POLY_TIMESTAMP": ts,
+                "POLY_ADDRESS": self.signer_address,
+                "POLY_SIGNATURE": sig,
+                "Content-Type": "application/json",
+            }
+            try:
+                r = self.http.post(url, headers=headers, data=body_str, timeout=30)
+                last_status, last_text = r.status_code, r.text
+                if r.ok:
+                    return last_status, last_text
+            except Exception as ex:
+                last_status, last_text = 0, f"Exception on variant {label}: {ex}"
+        return last_status, last_text
 
     def cancel_order(self, order_id: Optional[str] = None, client_id: Optional[str] = None) -> Tuple[int, str]:
         path = "/order/cancel"
