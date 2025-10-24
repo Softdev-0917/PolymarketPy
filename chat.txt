@@ -1,0 +1,65 @@
+Q: i have the auth working relatively reliably however order placing i get invalid payload
+A: Yes, I've worked with polymarket api before - especially around order palcement and eip-712 signing. If your auth is working but order placement fails with "invalid payload", it's usually a signing or json structure mismatch in the order body. I can review your current payload and fix the serialization and signing so it amtches polymarket's expected schema.
+
+Q: alright sounds good, are you confident you can make it work in vb.net framework 4.8
+winforms
+i attached my existing code to the project it should be similar (just working)
+A: Yes, absolutely. I can build a fully compatible module in vb.net framework 4.8 that integrates cleanly with winforms - async, thread-safe, and without any .net core dependencies.
+I will reuse your structure and focus on correcting the payload formatting and signing logic. The goal is keep it fully compatible with your existing vb.net 4.8 winform setup, just make it actually execute cleanly against polymarket's endpoints.
+
+Q: ok i have a wallet i can share as well if there is any trouble so we can test with the exact same setup
+do you think you can make it work with polymarket native funding wallet and metamask/eoa wallets?
+my understanding is it can work with either just the formatting/signing differs
+A: Yes, the module will handle both wallet types. for the native wallet, ill use polymarkte's signing format, and for eoas, ill use eip-712 structured signing. Once I have your test wallet, I can validate both path end-to-end
+
+Q: you can modify the code in polytradingapi (attached to the project) so it works?
+A: Yes. Of course
+
+Q: here is my current test code > auth works but executing an order gets invalid payload
+'Dim baseurl As String = "https://clob.polymarket.com"
+'Dim creds = PolyTradingApi.DeriveApiCredentials("0x8e02B93d276a495C31a51a331cBD49d28c56cb9a", "0xeef20336906be9f9084b5e73841e3ff82cc840f8a79a7589791a3141191e1681")
+'Dim apikey As String = creds.apiKey
+'Dim apisecret As String = creds.secret
+'Dim apipass As String = creds.passphrase
+'Dim eoa As String = "0x8e02B93d276a495C31a51a331cBD49d28c56cb9a"
+'Dim privkey As String = "0xeef20336906be9f9084b5e73841e3ff82cc840f8a79a7589791a3141191e1681"
+'Dim polyFunderAddr As String = "0xA2ABbd41422b0f6C5C3cE580ABcbCB77F369ed9F"
+
+'Dim api As New PolyTradingApi(baseurl, apikey, apisecret, apipass, eoa, privkey, polyFunderAddr, 1)
+
+'' Check authentication
+'Dim auth = api.TestL2AuthAsync().Result
+'If auth.status = 200 Then
+' ' Build and place orders
+' Dim exp As Long = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 120
+' 'Dim exp As Long = 0
+' Dim tokenid As String = "12754071136483660478546985528566525789685834872554441680136057469801007043111"
+' Dim order = api.BuildSignedOrder(tokenid, 0.9, 5, 0, exp)
+' Dim result = api.PlaceOrderAsync(order, "IOC").Result
+' Dim t1 = 1
+'End If
+
+
+-polymarket test.txt
+ 'Dim baseurl As String = "https://clob.polymarket.com"            
+'Dim creds = PolyTradingApi.DeriveApiCredentials("0x8e02B93d276a495C31a51a331cBD49d28c56cb9a", "0xeef20336906be9f9084b5e73841e3ff82cc840f8a79a7589791a3141191e1681")
+            'Dim apikey As String = creds.apiKey
+            'Dim apisecret As String = creds.secret
+            'Dim apipass As String = creds.passphrase
+            'Dim eoa As String = "0x8e02B93d276a495C31a51a331cBD49d28c56cb9a"
+            'Dim privkey As String = "0xeef20336906be9f9084b5e73841e3ff82cc840f8a79a7589791a3141191e1681"
+            'Dim polyFunderAddr As String = "0xA2ABbd41422b0f6C5C3cE580ABcbCB77F369ed9F"
+
+            'Dim api As New PolyTradingApi(baseurl, apikey, apisecret, apipass, eoa, privkey, polyFunderAddr, 1)
+
+            '' Check authentication
+            'Dim auth = api.TestL2AuthAsync().Result
+            'If auth.status = 200 Then
+            '    ' Build and place orders
+            '    Dim exp As Long = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 120
+            '    'Dim exp As Long = 0
+            '    Dim tokenid As String = "12754071136483660478546985528566525789685834872554441680136057469801007043111"
+            '    Dim order = api.BuildSignedOrder(tokenid, 0.9, 5, 0, exp)
+            '    Dim result = api.PlaceOrderAsync(order, "IOC").Result
+            '    Dim t1 = 1
+            'End If

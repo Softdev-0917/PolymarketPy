@@ -1,0 +1,57 @@
+I’m looking for a self-contained VB.NET module that communicates directly with the Polymarket API so I can place, cancel, and track Yes/No orders without jumping between tools.
+This should integrate easily into an existing WinForms VB.NET Framework 4.8 application.
+
+Note: I already have working authentication code (API key + signing), but it currently fails when trying to buy/sell. If you can diagnose and fix that while building the module, that’s a major plus.
+
+Core Requirements
+
+Target: .NET Framework 4.8, compatible with WinForms (no .NET Core dependencies).
+Clean async wrapper around Polymarket REST endpoints using Task-based VB.NET methods.
+Public API surface (strongly typed, no raw JSON):
+
+PlaceOrder()
+CancelOrder()
+GetOrderStatus()
+
+Each should accept/return strongly typed models (orders, IDs, enums, and errors).
+
+Concurrency: Must support multiple open orders concurrently (thread-safe, Task-based or queue-based).
+
+Resilience: Built-in error and rate-limit handling with retry/backoff and clear exception messages.
+
+Wallet Support:
+• Must work with both native Polymarket wallets and regular EOA (Metamask-style) wallets.
+• I can provide a test wallet for sandbox testing.
+
+Deterministic matching: Returned IDs and statuses should map cleanly to outbound requests for verification against the Polymarket dashboard.
+
+Deliverables
+
+Compilable VB.NET class or DLL targeting .NET Framework 4.8, ready to drop into an existing WinForms/WPF project.
+
+Simple console demo that connects to Polymarket’s testnet or sandbox, places a Yes/No order, cancels it, and fetches the status.
+
+Documentation: XML or markdown comments for all public members plus a short setup guide covering:
+API keys and environment variables
+Wallet configuration (Polymarket + EOA)
+Signing/auth flow
+
+Any NuGet dependencies compatible with .NET 4.8
+
+(Optional but preferred) Fix my current buy/sell flow that fails despite working authentication.
+
+Testing & Acceptance
+
+I’ll test by firing simultaneous orders and comparing returned IDs and statuses with the Polymarket dashboard.
+
+Must handle parallel requests without blocking or collisions.
+
+Clear logs for network, auth, and rate-limit issues.
+
+Nice to Have
+Experience with crypto or prediction market APIs, EIP-712 signing, or exchange-style order flows.
+Simple rate-limit handling (token bucket or exponential backoff).
+Clean, dependency-light VB.NET code.
+
+If you have experience with Polymarket, Metamask-style wallets, or EVM signing, please mention that.
+I can share my test wallet and existing authentication code for integration and verification.
