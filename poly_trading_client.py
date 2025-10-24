@@ -356,7 +356,6 @@ class PolyTradingClient:
                     {"name": "nonce", "type": "uint256"},
                     {"name": "feeRateBps", "type": "uint256"},
                     {"name": "side", "type": "uint8"},
-                    {"name": "exchangeAddr", "type": "address"},
                 ],
             },
             "primaryType": "Order",
@@ -378,9 +377,12 @@ class PolyTradingClient:
                 "nonce": int(p.nonce),
                 "feeRateBps": int(p.fee_bps),
                 "side": side_int,
-                "exchangeAddr": exchange,
             },
         }
+        try:
+            print("[DEBUG] Signing domain verifyingContract:", exchange)
+        except Exception:
+            pass
         sig = _eip712_encode_and_sign(typed, self.signer_private_key)
 
         if len(sig) == 132:
@@ -455,6 +457,13 @@ class PolyTradingClient:
 
         bodies = []
         bodies.append(("A", preferred_body))
+        # numeric side as 0/1 in the JSON (some servers require this)
+        order_numeric_side = dict(order_sig_std)
+        try:
+            order_numeric_side["side"] = 0 if str(order_numeric_side.get("side")).upper() == "BUY" else 1
+        except Exception:
+            pass
+        bodies.append(("A2", {"order": order_numeric_side, "owner": self.api_key, "orderType": order_type, **({"client_id": client_id} if client_id else {})}))
         bodies.append(("B", {"order": dict(order_side_int, signature=order_sig_std.get("signature")), "owner": self.api_key, "orderType": order_type, **({"client_id": client_id} if client_id else {})}))
         bodies.append(("C", {"order": order_sig_std, "owner": self.signer_address, "orderType": order_type, **({"client_id": client_id} if client_id else {})}))
         bodies.append(("D", {"order": dict(order_side_int, signature=order_sig_std.get("signature")), "owner": self.signer_address, "orderType": order_type, **({"client_id": client_id} if client_id else {})}))
