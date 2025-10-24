@@ -314,7 +314,7 @@ class PolyTradingClient:
         r = self.http.get(url, headers=headers, timeout=20)
         return r.status_code, r.text
 
-    def build_signed_order(self, p: OrderParams, exchange_override: Optional[str] = None) -> Dict[str, Any]:
+    def build_signed_order(self, p: OrderParams, exchange_override: Optional[str] = None, maker_override: Optional[str] = None) -> Dict[str, Any]:
         px = max(0.0, min(1.0, float(p.price)))
         shares_atomic = self._atomic(p.size_shares)
         dollars_atomic = self._atomic(p.size_shares * px)
@@ -330,7 +330,7 @@ class PolyTradingClient:
         else:
             raise ValueError("side must be 'BUY' or 'SELL'")
 
-        maker_addr = self.funder_address
+        maker_addr = self._normalize_addr(maker_override) if maker_override else self.funder_address
         signer_addr = self.signer_address
         exchange = (exchange_override or EXCHANGE_ADDR).lower()
 
@@ -456,25 +456,45 @@ class PolyTradingClient:
             pass
 
         bodies = []
+        # Preferred
         bodies.append(("A", preferred_body))
-        # numeric side as 0/1 in the JSON (some servers require this)
+        # numeric side
         order_numeric_side = dict(order_sig_std)
         try:
             order_numeric_side["side"] = 0 if str(order_numeric_side.get("side")).upper() == "BUY" else 1
         except Exception:
             pass
-        bodies.append(("A2", {"order": order_numeric_side, "owner": self.api_key, "orderType": order_type, **({"client_id": client_id} if client_id else {})}))
-        bodies.append(("B", {"order": dict(order_side_int, signature=order_sig_std.get("signature")), "owner": self.api_key, "orderType": order_type, **({"client_id": client_id} if client_id else {})}))
-        bodies.append(("C", {"order": order_sig_std, "owner": self.signer_address, "orderType": order_type, **({"client_id": client_id} if client_id else {})}))
-        bodies.append(("D", {"order": dict(order_side_int, signature=order_sig_std.get("signature")), "owner": self.signer_address, "orderType": order_type, **({"client_id": client_id} if client_id else {})}))
-        bodies.append(("E", {"order": order_sig_adj, "owner": self.api_key, "orderType": order_type, **({"client_id": client_id} if client_id else {})}))
-        bodies.append(("F", {"order": dict(order_side_int, signature=order_sig_adj.get("signature")), "owner": self.api_key, "orderType": order_type, **({"client_id": client_id} if client_id else {})}))
-        bodies.append(("G", {"order": order_sig_adj, "owner": self.signer_address, "orderType": order_type, **({"client_id": client_id} if client_id else {})}))
-        bodies.append(("H", {"order": dict(order_side_int, signature=order_sig_adj.get("signature")), "owner": self.signer_address, "orderType": order_type, **({"client_id": client_id} if client_id else {})}))
+        bodies.append(("A2", {"order": order_numeric_side, "owner": self.api_key, "orderType": order_type}))
+        # No client_id
+        bodies.append(("A3", {"order": order_sig_std, "owner": self.api_key, "orderType": order_type}))
+        # Owner as funder address
+        bodies.append(("A4", {"order": order_sig_std, "owner": self.funder_address, "orderType": order_type}))
+        # signatureType as string enum
+        sigtype_map = {0: "EOA", 1: "POLY_PROXY", 2: "POLY_GNOSIS_SAFE"}
+        sigtype_str = sigtype_map.get(order_sig_std.get("signatureType", self.signature_type), None)
+        if sigtype_str:
+            order_sigtype_str = dict(order_sig_std)
+            order_sigtype_str["signatureType"] = sigtype_str
+            bodies.append(("A5", {"order": order_sigtype_str, "owner": self.api_key, "orderType": order_type}))
+        # Omit signatureType (server may infer)
+        order_no_sigtype = dict(order_sig_std)
+        order_no_sigtype.pop("signatureType", None)
+        bodies.append(("A6", {"order": order_no_sigtype, "owner": self.api_key, "orderType": order_type}))
+        # Remaining original variants
+        bodies.append(("B", {"order": dict(order_side_int, signature=order_sig_std.get("signature")), "owner": self.api_key, "orderType": order_type}))
+        bodies.append(("C", {"order": order_sig_std, "owner": self.signer_address, "orderType": order_type}))
+        bodies.append(("D", {"order": dict(order_side_int, signature=order_sig_std.get("signature")), "owner": self.signer_address, "orderType": order_type}))
+        bodies.append(("E", {"order": order_sig_adj, "owner": self.api_key, "orderType": order_type}))
+        bodies.append(("F", {"order": dict(order_side_int, signature=order_sig_adj.get("signature")), "owner": self.api_key, "orderType": order_type}))
+        bodies.append(("G", {"order": order_sig_adj, "owner": self.signer_address, "orderType": order_type}))
+        bodies.append(("H", {"order": dict(order_side_int, signature=order_sig_adj.get("signature")), "owner": self.signer_address, "orderType": order_type}))
 
         last_status, last_text = 0, ""
         for label, body in bodies:
-            body_str = json.dumps(body, separators=(",", ":"))
+            body_try = dict(body)
+            if client_id and label not in ("A3",):  # skip client_id for A3 intentionally
+                body_try["client_id"] = client_id
+            body_str = json.dumps(body_try, separators=(",", ":"))
 
             ts = str(int(time.time()))
             sig = self._l2_signature(ts, "POST", path, body_str)
@@ -498,7 +518,7 @@ class PolyTradingClient:
                     print(f"[DEBUG] Variant {label} -> {r.status_code} {r.text}")
             except Exception as ex:
                 last_status, last_text = 0, f"Exception on variant {label}: {ex}"
-                print(last_text)
+                print(last_status, last_text)
         return last_status, last_text
 
     def cancel_order(self, order_id: Optional[str] = None, client_id: Optional[str] = None) -> Tuple[int, str]:

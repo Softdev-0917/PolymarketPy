@@ -142,20 +142,28 @@ def main() -> None:
         print("[DISCOVERY] Maker nonce not found; using 0.")
 
     exp = int(time.time()) + 120
-    order = client.build_signed_order(
-        OrderParams(
-            token_id=cfg.token_id,
-            price=cfg.price,
-            size_shares=cfg.size,
-            side=cfg.side,
-            expiration_unix=exp,
-            nonce=maker_nonce or "0",
-        ),
-        exchange_override=exchange_addr,
-    )
 
-    st, resp = client.place_order(order, cfg.order_type, client_id="py_demo_001")
-    print("Place order:", st, resp)
+    def try_place(maker_override: Optional[str]):
+        order = client.build_signed_order(
+            OrderParams(
+                token_id=cfg.token_id,
+                price=cfg.price,
+                size_shares=cfg.size,
+                side=cfg.side,
+                expiration_unix=exp,
+                nonce=maker_nonce or "0",
+            ),
+            exchange_override=exchange_addr,
+            maker_override=maker_override,
+        )
+        print("[DEBUG] Using maker:", order.get("maker"))
+        st, resp = client.place_order(order, cfg.order_type, client_id="py_demo_001")
+        print("Place order:", st, resp)
+        return st, resp
+
+    st, resp = try_place(cfg.funder_address or client.funder_address)
+    if st != 200:
+        st, resp = try_place(cfg.signer_address)
 
     order_id = None
     try:
