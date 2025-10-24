@@ -7,6 +7,13 @@ from typing import Optional
 from dotenv import load_dotenv
 
 from poly_trading_client import PolyTradingClient, OrderParams
+try:
+    from py_clob_client.client import ClobClient
+    from py_clob_client.clob_types import OrderArgs, OrderType
+    from py_clob_client.order_builder.constants import BUY as PYBUY, SELL as PYSELL
+    _has_pyclob = True
+except Exception:
+    _has_pyclob = False
 
 
 def _mask_addr(a: Optional[str]) -> str:
@@ -157,6 +164,23 @@ def main() -> None:
             maker_override=maker_override,
         )
         print("[DEBUG] Using maker:", order.get("maker"))
+
+        # Optional: build official payload to compare
+        if _has_pyclob:
+            try:
+                cc = ClobClient(host=cfg.base_url, key=cfg.private_key, chain_id=137, signature_type=cfg.signature_type, funder=cfg.funder_address)
+                cc.set_api_creds(cc.create_or_derive_api_creds())
+                oa = OrderArgs(price=cfg.price, size=cfg.size, side=(PYBUY if cfg.side.upper()=="BUY" else PYSELL), token_id=cfg.token_id)
+                off_order = cc.create_order(oa)
+                print("[OFFICIAL] order keys:", list(off_order.keys()))
+                print("[OFFICIAL] side:", off_order.get("side"), "signatureType:", off_order.get("signatureType"))
+                print("[OFFICIAL] maker:", off_order.get("maker"), "signer:", off_order.get("signer"))
+                print("[OFFICIAL] tokenId:", off_order.get("tokenId"))
+                print("[OFFICIAL] makerAmount:", off_order.get("makerAmount"), "takerAmount:", off_order.get("takerAmount"))
+                print("[OFFICIAL] expiration:", off_order.get("expiration"), "nonce:", off_order.get("nonce"), "feeRateBps:", off_order.get("feeRateBps"))
+            except Exception as ex:
+                print("[OFFICIAL] build failed:", ex)
+
         st, resp = client.place_order(order, cfg.order_type, client_id="py_demo_001")
         print("Place order:", st, resp)
         return st, resp
