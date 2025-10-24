@@ -9,6 +9,42 @@ from dotenv import load_dotenv
 from poly_trading_client import PolyTradingClient, OrderParams
 
 
+def _mask_addr(a: Optional[str]) -> str:
+    if not a:
+        return "(empty)"
+    a = a.strip()
+    if len(a) >= 10:
+        return a[:8] + "..." + a[-4:]
+    return "(set)"
+
+
+def _mask_hex(h: Optional[str]) -> str:
+    if not h:
+        return "(empty)"
+    h = h.strip()
+    if len(h) >= 12:
+        return h[:10] + "..." + h[-6:]
+    return "(set)"
+
+
+def _mask_uuid(u: Optional[str]) -> str:
+    if not u:
+        return "(empty)"
+    u = u.strip()
+    if len(u) >= 12:
+        return u[:8] + "..." + u[-4:]
+    return "(set)"
+
+
+def _mask_token(t: Optional[str]) -> str:
+    if not t:
+        return "(empty)"
+    t = t.strip()
+    if len(t) > 16:
+        return t[:8] + "..." + t[-6:]
+    return t
+
+
 @dataclass
 class EnvConfig:
     base_url: str
@@ -47,6 +83,19 @@ def read_env() -> EnvConfig:
 
 def main() -> None:
     cfg = read_env()
+
+    # Diagnostics for loaded env (masked)
+    print("[ENV] BASE_URL:", cfg.base_url)
+    print("[ENV] SIGNER_ADDRESS:", _mask_addr(cfg.signer_address))
+    print("[ENV] PRIVATE_KEY:", _mask_hex(cfg.private_key))
+    print("[ENV] FUNDER_ADDRESS:", _mask_addr(cfg.funder_address))
+    print("[ENV] SIGNATURE_TYPE:", cfg.signature_type)
+    print("[ENV] API_KEY:", _mask_uuid(cfg.api_key) if cfg.api_key else "(derive)")
+    print("[ENV] API_SECRET:", _mask_hex(cfg.api_secret) if cfg.api_secret else "(derive)")
+    print("[ENV] API_PASSPHRASE:", "(set)" if cfg.api_passphrase else "(derive)")
+    print("[ENV] TOKEN_ID:", _mask_token(cfg.token_id))
+    print("[ENV] SIDE:", cfg.side, "PRICE:", cfg.price, "SIZE:", cfg.size, "ORDER_TYPE:", cfg.order_type)
+
     if not cfg.signer_address or not cfg.private_key:
         raise SystemExit("SIGNER_ADDRESS and PRIVATE_KEY are required in .env")
 
