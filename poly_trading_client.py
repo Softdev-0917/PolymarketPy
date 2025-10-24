@@ -356,6 +356,7 @@ class PolyTradingClient:
                     {"name": "nonce", "type": "uint256"},
                     {"name": "feeRateBps", "type": "uint256"},
                     {"name": "side", "type": "uint8"},
+                    {"name": "exchangeAddr", "type": "address"},
                 ],
             },
             "primaryType": "Order",
@@ -377,10 +378,11 @@ class PolyTradingClient:
                 "nonce": int(p.nonce),
                 "feeRateBps": int(p.fee_bps),
                 "side": side_int,
+                "exchangeAddr": exchange,
             },
         }
         try:
-            print("[DEBUG] Signing domain verifyingContract:", exchange)
+            print("[DEBUG] Signing typed Order keys:", list(typed["message"].keys()))
         except Exception:
             pass
         sig = _eip712_encode_and_sign(typed, self.signer_private_key)
