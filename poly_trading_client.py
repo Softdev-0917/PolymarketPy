@@ -166,6 +166,7 @@ class PolyTradingClient:
             f"/nonce?maker={maker}",
         ]
         for p in paths:
+            # Try with L2 headers
             try:
                 ts = str(int(time.time()))
                 sig = self._l2_signature(ts, "GET", p)
@@ -177,24 +178,39 @@ class PolyTradingClient:
                     "POLY_SIGNATURE": sig,
                 }
                 r = self.http.get(self.base_url + p, headers=headers, timeout=15)
-                if not r.ok:
-                    continue
-                jo = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
-                # Accept common shapes: {"nonce":"123"} or {"result":{"nonce":"123"}}
-                val = jo.get("nonce") if isinstance(jo, dict) else None
-                if not val and isinstance(jo, dict):
-                    res = jo.get("result")
-                    if isinstance(res, dict):
-                        val = res.get("nonce")
-                if val is None:
-                    # maybe plain text
-                    txt = r.text.strip()
-                    if txt.isdigit():
-                        val = txt
-                if val is not None:
-                    return str(val)
-            except Exception:
-                continue
+                if r.ok:
+                    print(f"[DISCOVERY] Nonce GET {p} -> {r.status_code} {r.text}")
+                if r.ok:
+                    jo = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+                    val = jo.get("nonce") if isinstance(jo, dict) else None
+                    if not val and isinstance(jo, dict):
+                        res = jo.get("result")
+                        if isinstance(res, dict):
+                            val = res.get("nonce")
+                    if val is None:
+                        txt = r.text.strip()
+                        if txt.isdigit():
+                            val = txt
+                    if val is not None:
+                        return str(val)
+            except Exception as ex:
+                print(f"[DISCOVERY] Nonce GET {p} failed: {ex}")
+            # Try without headers
+            try:
+                r = self.http.get(self.base_url + p, timeout=10)
+                if r.ok:
+                    print(f"[DISCOVERY] Nonce GET (noauth) {p} -> {r.status_code} {r.text}")
+                if r.ok:
+                    jo = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+                    val = jo.get("nonce") if isinstance(jo, dict) else None
+                    if val is None:
+                        txt = r.text.strip()
+                        if txt.isdigit():
+                            val = txt
+                    if val is not None:
+                        return str(val)
+            except Exception as ex:
+                print(f"[DISCOVERY] Nonce GET (noauth) {p} failed: {ex}")
         return None
 
     @staticmethod
@@ -418,30 +434,38 @@ class PolyTradingClient:
         except Exception:
             pass
 
+        # Log preferred variant for debugging
+        preferred_body = {"order": order_sig_std, "owner": self.api_key, "orderType": order_type}
+        if client_id:
+            preferred_body["client_id"] = client_id
+        preferred_body_str = json.dumps(preferred_body, separators=(",", ":"))
+        try:
+            sig_hex = order_sig_std.get("signature", "")
+            v_hex = sig_hex[130:132] if len(sig_hex) == 132 else ""
+            print("[DEBUG] Preferred order payload:")
+            print("[DEBUG]   side:", order_sig_std.get("side"), "signatureType:", order_sig_std.get("signatureType"))
+            print("[DEBUG]   maker:", order_sig_std.get("maker"), "signer:", order_sig_std.get("signer"))
+            print("[DEBUG]   tokenId:", order_sig_std.get("tokenId"))
+            print("[DEBUG]   makerAmount:", order_sig_std.get("makerAmount"), "takerAmount:", order_sig_std.get("takerAmount"))
+            print("[DEBUG]   expiration:", order_sig_std.get("expiration"), "nonce:", order_sig_std.get("nonce"), "feeRateBps:", order_sig_std.get("feeRateBps"))
+            print("[DEBUG]   signature len:", len(sig_hex), "v:", v_hex)
+            print("[DEBUG]   HTTP body:", preferred_body_str)
+        except Exception:
+            pass
+
         bodies = []
-        # A: BUY/SELL, owner=api_key, sig std
-        bodies.append(("A", {"order": order_sig_std, "owner": self.api_key, "orderType": order_type}))
-        # B: 0/1, owner=api_key, sig std
-        bodies.append(("B", {"order": dict(order_side_int, signature=order_sig_std.get("signature")), "owner": self.api_key, "orderType": order_type}))
-        # C: BUY/SELL, owner=signer, sig std
-        bodies.append(("C", {"order": order_sig_std, "owner": self.signer_address, "orderType": order_type}))
-        # D: 0/1, owner=signer, sig std
-        bodies.append(("D", {"order": dict(order_side_int, signature=order_sig_std.get("signature")), "owner": self.signer_address, "orderType": order_type}))
-        # E: BUY/SELL, owner=api_key, sig adj v
-        bodies.append(("E", {"order": order_sig_adj, "owner": self.api_key, "orderType": order_type}))
-        # F: 0/1, owner=api_key, sig adj v
-        bodies.append(("F", {"order": dict(order_side_int, signature=order_sig_adj.get("signature")), "owner": self.api_key, "orderType": order_type}))
-        # G: BUY/SELL, owner=signer, sig adj v
-        bodies.append(("G", {"order": order_sig_adj, "owner": self.signer_address, "orderType": order_type}))
-        # H: 0/1, owner=signer, sig adj v
-        bodies.append(("H", {"order": dict(order_side_int, signature=order_sig_adj.get("signature")), "owner": self.signer_address, "orderType": order_type}))
+        bodies.append(("A", preferred_body))
+        bodies.append(("B", {"order": dict(order_side_int, signature=order_sig_std.get("signature")), "owner": self.api_key, "orderType": order_type, **({"client_id": client_id} if client_id else {})}))
+        bodies.append(("C", {"order": order_sig_std, "owner": self.signer_address, "orderType": order_type, **({"client_id": client_id} if client_id else {})}))
+        bodies.append(("D", {"order": dict(order_side_int, signature=order_sig_std.get("signature")), "owner": self.signer_address, "orderType": order_type, **({"client_id": client_id} if client_id else {})}))
+        bodies.append(("E", {"order": order_sig_adj, "owner": self.api_key, "orderType": order_type, **({"client_id": client_id} if client_id else {})}))
+        bodies.append(("F", {"order": dict(order_side_int, signature=order_sig_adj.get("signature")), "owner": self.api_key, "orderType": order_type, **({"client_id": client_id} if client_id else {})}))
+        bodies.append(("G", {"order": order_sig_adj, "owner": self.signer_address, "orderType": order_type, **({"client_id": client_id} if client_id else {})}))
+        bodies.append(("H", {"order": dict(order_side_int, signature=order_sig_adj.get("signature")), "owner": self.signer_address, "orderType": order_type, **({"client_id": client_id} if client_id else {})}))
 
         last_status, last_text = 0, ""
         for label, body in bodies:
-            b = dict(body)
-            if client_id:
-                b["client_id"] = client_id
-            body_str = json.dumps(b, separators=(",", ":"))
+            body_str = json.dumps(body, separators=(",", ":"))
 
             ts = str(int(time.time()))
             sig = self._l2_signature(ts, "POST", path, body_str)
@@ -459,9 +483,13 @@ class PolyTradingClient:
                 r = self.http.post(url, headers=headers, data=body_str, timeout=30)
                 last_status, last_text = r.status_code, r.text
                 if r.ok:
+                    print(f"[DEBUG] Variant {label} accepted")
                     return last_status, last_text
+                else:
+                    print(f"[DEBUG] Variant {label} -> {r.status_code} {r.text}")
             except Exception as ex:
                 last_status, last_text = 0, f"Exception on variant {label}: {ex}"
+                print(last_text)
         return last_status, last_text
 
     def cancel_order(self, order_id: Optional[str] = None, client_id: Optional[str] = None) -> Tuple[int, str]:
