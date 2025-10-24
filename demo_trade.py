@@ -148,7 +148,8 @@ def main() -> None:
     else:
         print("[DISCOVERY] Maker nonce not found; using 0.")
 
-    exp = int(time.time()) + 600
+    tif = cfg.order_type.upper()
+    exp = 0 if tif in ("FOK", "IOC") else (int(time.time()) + 600)
 
     def try_place(maker_override: Optional[str]):
         order = client.build_signed_order(
