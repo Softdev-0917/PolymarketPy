@@ -148,7 +148,7 @@ def main() -> None:
     else:
         print("[DISCOVERY] Maker nonce not found; using 0.")
 
-    exp = int(time.time()) + 120
+    exp = int(time.time()) + 600
 
     def try_place(maker_override: Optional[str]):
         order = client.build_signed_order(
@@ -172,12 +172,30 @@ def main() -> None:
                 cc.set_api_creds(cc.create_or_derive_api_creds())
                 oa = OrderArgs(price=cfg.price, size=cfg.size, side=(PYBUY if cfg.side.upper()=="BUY" else PYSELL), token_id=cfg.token_id)
                 off_order = cc.create_order(oa)
-                print("[OFFICIAL] order keys:", list(off_order.keys()))
-                print("[OFFICIAL] side:", off_order.get("side"), "signatureType:", off_order.get("signatureType"))
-                print("[OFFICIAL] maker:", off_order.get("maker"), "signer:", off_order.get("signer"))
-                print("[OFFICIAL] tokenId:", off_order.get("tokenId"))
-                print("[OFFICIAL] makerAmount:", off_order.get("makerAmount"), "takerAmount:", off_order.get("takerAmount"))
-                print("[OFFICIAL] expiration:", off_order.get("expiration"), "nonce:", off_order.get("nonce"), "feeRateBps:", off_order.get("feeRateBps"))
+                # Try multiple ways to view the underlying order dict
+                off_data = None
+                for attr in ("dict", "model_dump", "to_json", "json"):
+                    if hasattr(off_order, attr):
+                        try:
+                            val = getattr(off_order, attr)
+                            val = val() if callable(val) else val
+                            off_data = json.loads(val) if isinstance(val, str) else val
+                            break
+                        except Exception:
+                            pass
+                if off_data is None:
+                    try:
+                        off_data = vars(off_order)
+                    except Exception:
+                        off_data = {"repr": repr(off_order)}
+                print("[OFFICIAL] keys:", list(off_data.keys()) if isinstance(off_data, dict) else type(off_data))
+                if isinstance(off_data, dict):
+                    oo = off_data.get("order") or off_data
+                    print("[OFFICIAL] side:", oo.get("side"), "signatureType:", oo.get("signatureType"))
+                    print("[OFFICIAL] maker:", oo.get("maker"), "signer:", oo.get("signer"))
+                    print("[OFFICIAL] tokenId:", oo.get("tokenId"))
+                    print("[OFFICIAL] makerAmount:", oo.get("makerAmount"), "takerAmount:", oo.get("takerAmount"))
+                    print("[OFFICIAL] expiration:", oo.get("expiration"), "nonce:", oo.get("nonce"), "feeRateBps:", oo.get("feeRateBps"))
             except Exception as ex:
                 print("[OFFICIAL] build failed:", ex)
 

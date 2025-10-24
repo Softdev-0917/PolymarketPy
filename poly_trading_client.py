@@ -408,6 +408,7 @@ class PolyTradingClient:
             "side": p.side.upper(),
             "signatureType": self.signature_type,
             "signature": sig,
+            "exchangeAddr": exchange,
         }
         return order
 
