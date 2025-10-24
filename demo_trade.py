@@ -127,6 +127,20 @@ def main() -> None:
     if not cfg.token_id:
         raise SystemExit("TOKEN_ID is required in .env to place an order")
 
+    # Try to discover correct exchange address for token
+    exchange_addr = client.fetch_exchange_address_for_token(cfg.token_id)
+    if exchange_addr:
+        print("[DISCOVERY] Exchange address:", exchange_addr)
+    else:
+        print("[DISCOVERY] Exchange address not found via Gamma; using default.")
+
+    # Try to fetch maker nonce
+    maker_nonce = client.fetch_maker_nonce()
+    if maker_nonce:
+        print("[DISCOVERY] Maker nonce:", maker_nonce)
+    else:
+        print("[DISCOVERY] Maker nonce not found; using 0.")
+
     exp = int(time.time()) + 120
     order = client.build_signed_order(
         OrderParams(
@@ -135,7 +149,9 @@ def main() -> None:
             size_shares=cfg.size,
             side=cfg.side,
             expiration_unix=exp,
-        )
+            nonce=maker_nonce or "0",
+        ),
+        exchange_override=exchange_addr,
     )
 
     st, resp = client.place_order(order, cfg.order_type, client_id="py_demo_001")

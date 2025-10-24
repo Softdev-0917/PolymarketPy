@@ -134,6 +134,69 @@ class PolyTradingClient:
                 f"Private key does not match signer address. Derived={derived}, Provided={self.signer_address}"
             )
 
+    # ---- discovery helpers ----
+    def fetch_exchange_address_for_token(self, token_id: str) -> Optional[str]:
+        gamma = "https://gamma-api.polymarket.com"
+        paths = [
+            f"/markets?token_id={token_id}",
+            f"/markets?tokenId={token_id}",
+            f"/markets?ids={token_id}",
+        ]
+        for p in paths:
+            try:
+                r = self.http.get(gamma + p, timeout=15)
+                if not r.ok:
+                    continue
+                data = r.json()
+                # data may be an array of markets
+                if isinstance(data, list) and data:
+                    m = data[0]
+                    ex = m.get("exchangeAddress") or m.get("exchange")
+                    if isinstance(ex, str) and ex.startswith("0x") and len(ex) == 42:
+                        return ex.lower()
+            except Exception:
+                continue
+        return None
+
+    def fetch_maker_nonce(self, maker_address: Optional[str] = None) -> Optional[str]:
+        maker = maker_address or self.funder_address or self.signer_address
+        paths = [
+            f"/exchange/nonce?address={maker}",
+            f"/nonce?address={maker}",
+            f"/nonce?maker={maker}",
+        ]
+        for p in paths:
+            try:
+                ts = str(int(time.time()))
+                sig = self._l2_signature(ts, "GET", p)
+                headers = {
+                    "POLY_API_KEY": self.api_key,
+                    "POLY_PASSPHRASE": self.api_passphrase,
+                    "POLY_TIMESTAMP": ts,
+                    "POLY_ADDRESS": self.signer_address,
+                    "POLY_SIGNATURE": sig,
+                }
+                r = self.http.get(self.base_url + p, headers=headers, timeout=15)
+                if not r.ok:
+                    continue
+                jo = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+                # Accept common shapes: {"nonce":"123"} or {"result":{"nonce":"123"}}
+                val = jo.get("nonce") if isinstance(jo, dict) else None
+                if not val and isinstance(jo, dict):
+                    res = jo.get("result")
+                    if isinstance(res, dict):
+                        val = res.get("nonce")
+                if val is None:
+                    # maybe plain text
+                    txt = r.text.strip()
+                    if txt.isdigit():
+                        val = txt
+                if val is not None:
+                    return str(val)
+            except Exception:
+                continue
+        return None
+
     @staticmethod
     def _normalize_addr(addr: Optional[str]) -> str:
         a = (addr or "").strip()
@@ -235,7 +298,7 @@ class PolyTradingClient:
         r = self.http.get(url, headers=headers, timeout=20)
         return r.status_code, r.text
 
-    def build_signed_order(self, p: OrderParams) -> Dict[str, Any]:
+    def build_signed_order(self, p: OrderParams, exchange_override: Optional[str] = None) -> Dict[str, Any]:
         px = max(0.0, min(1.0, float(p.price)))
         shares_atomic = self._atomic(p.size_shares)
         dollars_atomic = self._atomic(p.size_shares * px)
@@ -253,7 +316,7 @@ class PolyTradingClient:
 
         maker_addr = self.funder_address
         signer_addr = self.signer_address
-        exchange = EXCHANGE_ADDR
+        exchange = (exchange_override or EXCHANGE_ADDR).lower()
 
         salt_value = random.randint(100_000_000, 999_999_999)
 
