@@ -1,4 +1,5 @@
 import os
+import math
 import json
 import time
 from dataclasses import dataclass
@@ -135,18 +136,62 @@ def main() -> None:
         raise SystemExit("TOKEN_ID is required in .env to place an order")
 
     # Try to discover correct exchange address for token
+    print(f"[DISCOVERY] Fetching exchange address for token: {cfg.token_id}")
     exchange_addr = client.fetch_exchange_address_for_token(cfg.token_id)
     if exchange_addr:
         print("[DISCOVERY] Exchange address:", exchange_addr)
     else:
         print("[DISCOVERY] Exchange address not found via Gamma; using default.")
 
-    # Try to fetch maker nonce
-    maker_nonce = client.fetch_maker_nonce()
-    if maker_nonce:
-        print("[DISCOVERY] Maker nonce:", maker_nonce)
-    else:
-        print("[DISCOVERY] Maker nonce not found; using 0.")
+    # Pre-flight market checks: orderbook, tick size, min order size
+    size_to_use = cfg.size
+    price_to_use = cfg.price
+    if _has_pyclob:
+        try:
+            chain_id = 137
+            bl = (cfg.base_url or "").lower()
+            if ("amoy" in bl) or ("80002" in bl) or ("staging" in bl) or ("test" in bl):
+                chain_id = 80002
+            cc = ClobClient(host=cfg.base_url, key=cfg.private_key, chain_id=chain_id, signature_type=cfg.signature_type, funder=cfg.funder_address)
+            obs = cc.get_order_book(cfg.token_id)
+            try:
+                print(f"[MARKET] tick_size={obs.tick_size} min_order_size={obs.min_order_size}")
+            except Exception:
+                pass
+            # Enforce min order size
+            try:
+                min_sz = float(obs.min_order_size)
+                if size_to_use < min_sz:
+                    print(f"[MARKET] size {size_to_use} < min {min_sz}, bumping to min")
+                    size_to_use = min_sz
+            except Exception:
+                pass
+            # Snap price to tick grid
+            try:
+                tick = float(obs.tick_size)
+                if tick > 0:
+                    steps = round(price_to_use / tick)
+                    snapped = max(tick, min(1 - tick, steps * tick))
+                    if abs(snapped - price_to_use) > 1e-9:
+                        print(f"[MARKET] price {price_to_use} -> snapped {snapped} by tick {tick}")
+                        price_to_use = snapped
+            except Exception:
+                pass
+            # Enforce min notional ($1) for marketable BUY on FOK/IOC
+            try:
+                if cfg.order_type.upper() in ("FOK", "IOC") and cfg.side.upper() == "BUY":
+                    notional = float(price_to_use) * float(size_to_use)
+                    if notional < 1.0:
+                        # bump size to meet $1 notional with 1e-6 share precision
+                        required_atomic = math.ceil((1.0 / float(price_to_use)) * 1_000_000)
+                        bumped = required_atomic / 1_000_000.0
+                        if bumped > size_to_use:
+                            print(f"[MARKET] FOK BUY notional ${notional:.2f} < $1.0, bumping size to {bumped}")
+                            size_to_use = bumped
+            except Exception:
+                pass
+        except Exception as ex:
+            print("[MARKET] pre-flight checks skipped:", ex)
 
     tif = cfg.order_type.upper()
     exp = 0 if tif in ("FOK", "IOC") else (int(time.time()) + 600)
@@ -155,11 +200,11 @@ def main() -> None:
         order = client.build_signed_order(
             OrderParams(
                 token_id=cfg.token_id,
-                price=cfg.price,
-                size_shares=cfg.size,
+                price=price_to_use,
+                size_shares=size_to_use,
                 side=cfg.side,
                 expiration_unix=exp,
-                nonce=maker_nonce or "0",
+                nonce= "0",
             ),
             exchange_override=exchange_addr,
             maker_override=maker_override,
@@ -210,16 +255,22 @@ def main() -> None:
 
     order_id = None
     try:
-        jo = json.loads(resp)
-        order_id = jo.get("orderId") or jo.get("id") or jo.get("order_id")
+        jo = json.loads(resp) if isinstance(resp, str) else resp
+        if isinstance(jo, dict):
+            order_id = (
+                jo.get("orderID")
+                or jo.get("orderId")
+                or jo.get("id")
+                or jo.get("order_id")
+            )
     except Exception:
         pass
-
+    print("order_id:", order_id)
     # Optional: cancel if we got an id
     if order_id:
         time.sleep(0.5)
-        st2, resp2 = client.cancel_order(order_id=order_id)
-        print("Cancel order:", st2, resp2)
+        # st2, resp2 = client.cancel_order(order_id=order_id)
+        # print("Cancel order:", st2, resp2)
 
         # Fetch status (best-effort)
         st3, resp3 = client.get_order_status(order_id)

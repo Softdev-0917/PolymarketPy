@@ -21,6 +21,26 @@ except Exception:
     except Exception:
         abi_encode = None
 from eth_keys import keys as _eth_keys
+try:
+    from py_clob_client.config import get_contract_config as _get_contract_config
+except Exception:
+    _get_contract_config = None
+try:
+    from py_order_utils.builders import OrderBuilder as _UtilsOrderBuilder
+    from py_order_utils.signer import Signer as _UtilsSigner
+    from py_order_utils.model.order import OrderData as _UtilsOrderData
+    from py_clob_client.order_builder.helpers import to_token_decimals as _to_token_decimals
+except Exception:
+    _UtilsOrderBuilder = None
+    _UtilsSigner = None
+    _UtilsOrderData = None
+    _to_token_decimals = None
+try:
+    from py_clob_client.client import ClobClient as _ClobClient
+    from py_clob_client.clob_types import OrderArgs as _ClobOrderArgs
+except Exception:
+    _ClobClient = None
+    _ClobOrderArgs = None
 
 
 # Keep URL-safe Base64 with padding retained
@@ -136,25 +156,106 @@ class PolyTradingClient:
 
     # ---- discovery helpers ----
     def fetch_exchange_address_for_token(self, token_id: str) -> Optional[str]:
-        gamma = "https://gamma-api.polymarket.com"
-        paths = [
-            f"/markets?token_id={token_id}",
-            f"/markets?tokenId={token_id}",
-            f"/markets?ids={token_id}",
+        # 1) Try CLOB for a config hint (preferred when available)
+        clob_candidates = [
+            "/exchange/config",
+            "/config",
+            "/exchange",
         ]
-        for p in paths:
+
+        # 2) Try CLOB neg-risk endpoint and map via official contract config
+        # Determine neg-risk for the token (unauthenticated and authenticated attempts)
+        neg_risk_flag = None
+        nr_path = f"/neg-risk?token_id={token_id}"
+        try:
+            r = self.http.get(self.base_url + nr_path, timeout=10)
+            if r.ok:
+                jo = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+                if isinstance(jo, dict) and "neg_risk" in jo:
+                    neg_risk_flag = bool(jo.get("neg_risk"))
+        except Exception:
+            pass
+        # print(f"[DISCOVERY] Neg risk flag: {neg_risk_flag}")
+        if neg_risk_flag is None:
             try:
-                r = self.http.get(gamma + p, timeout=15)
-                if not r.ok:
-                    continue
-                data = r.json()
-                # data may be an array of markets
-                if isinstance(data, list) and data:
-                    m = data[0]
-                    ex = m.get("exchangeAddress") or m.get("exchange")
-                    if isinstance(ex, str) and ex.startswith("0x") and len(ex) == 42:
-                        return ex.lower()
+                ts = str(int(time.time()))
+                sig = self._l2_signature(ts, "GET", nr_path)
+                headers = {
+                    "POLY_API_KEY": self.api_key,
+                    "POLY_PASSPHRASE": self.api_passphrase,
+                    "POLY_TIMESTAMP": ts,
+                    "POLY_ADDRESS": self.signer_address,
+                    "POLY_SIGNATURE": sig,
+                }
+                r = self.http.get(self.base_url + nr_path, headers=headers, timeout=10)
+                if r.ok:
+                    jo = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+                    if isinstance(jo, dict) and "neg_risk" in jo:
+                        neg_risk_flag = bool(jo.get("neg_risk"))
+                        # print(f"[DISCOVERY] Neg risk flag: {neg_risk_flag}")
             except Exception:
+                pass
+
+        # Infer chain id from base_url; default to Polygon mainnet (137)
+        chain_id = 137
+        try:
+            base_lower = (self.base_url or "").lower()
+            if ("amoy" in base_lower) or ("80002" in base_lower) or ("staging" in base_lower) or ("test" in base_lower):
+                chain_id = 80002
+        except Exception:
+            pass
+
+        if _get_contract_config is not None:
+            try:
+                cfg = _get_contract_config(chain_id, bool(neg_risk_flag))
+                # print(f"[DISCOVERY] Contract config: {cfg}")
+                ex = getattr(cfg, "exchange", None)
+                if isinstance(ex, str) and ex.startswith("0x") and len(ex) == 42:
+                    return ex.lower()
+            except Exception:
+                pass
+
+        gamma = "https://gamma-api.polymarket.com"
+        # Try multiple endpoints and payload shapes. Outcome token IDs usually
+        # don't resolve via /markets filters; prefer /outcomes then map to market.
+        candidates = [
+            # Outcomes by token id
+            (f"/outcomes?ids={token_id}", "outcome"),
+            (f"/outcomes?tokenId={token_id}", "outcome"),
+            # Markets by id (some backends accept ids=tokenId even if it's a market id)
+            (f"/markets?ids={token_id}", "market"),
+            (f"/markets?tokenId={token_id}", "market"),
+            (f"/markets?token_id={token_id}", "market"),
+        ]
+        for path, kind in candidates:
+            try:
+                r = self.http.get(gamma + path, timeout=15)
+                if not r.ok:
+                    print(f"[DISCOVERY] Gamma GET {path} -> {r.status_code}")
+                    continue
+                try:
+                    data = r.json()
+                except Exception:
+                    print(f"[DISCOVERY] Gamma GET {path} returned non-JSON")
+                    continue
+                # Unwrap common {"data": [...]} shape
+                items = data.get("data") if isinstance(data, dict) else data
+                if not (isinstance(items, list) and items):
+                    print(f"[DISCOVERY] Gamma GET {path} empty list")
+                    continue
+                first = items[0] if isinstance(items[0], dict) else {}
+                if kind == "outcome":
+                    market_obj = first.get("market") if isinstance(first.get("market"), dict) else {}
+                    ex = (market_obj.get("exchangeAddress")
+                          or market_obj.get("exchange"))
+                else:
+                    ex = (first.get("exchangeAddress")
+                          or first.get("exchange"))
+                if isinstance(ex, str) and ex.startswith("0x") and len(ex) == 42:
+                    return ex.lower()
+                print(f"[DISCOVERY] Gamma GET {path} missing exchange field")
+            except Exception as ex:
+                print(f"[DISCOVERY] Gamma GET {path} error: {ex}")
                 continue
         return None
 
@@ -332,10 +433,91 @@ class PolyTradingClient:
 
         maker_addr = self._normalize_addr(maker_override) if maker_override else self.funder_address
         signer_addr = self.signer_address
-        exchange = (exchange_override or EXCHANGE_ADDR).lower()
+        # Resolve exchange: prefer caller override; else auto-detect via CLOB (handles neg-risk); fallback to default
+        detected_exchange = None
+        if not exchange_override:
+            try:
+                detected_exchange = self.fetch_exchange_address_for_token(str(p.token_id))
+            except Exception:
+                detected_exchange = None
+        exchange = (exchange_override or detected_exchange or EXCHANGE_ADDR).lower()
+
+        # Infer chain id from base_url; default to Polygon mainnet (137)
+        chain_id = 137
+        try:
+            base_lower = (self.base_url or "").lower()
+            if ("amoy" in base_lower) or ("80002" in base_lower) or ("staging" in base_lower) or ("test" in base_lower):
+                chain_id = 80002
+        except Exception:
+            pass
 
         salt_value = random.randint(100_000_000, 999_999_999)
 
+        # Prefer building with official utils to ensure perfect schema/signature
+        try:
+            # Best-effort: use full CLOB builder to resolve tick size/fee rate and sign
+            if _ClobClient and _ClobOrderArgs:
+                # Infer chain id from base_url; default to Polygon mainnet (137)
+                chain_id = 137
+                try:
+                    base_lower = (self.base_url or "").lower()
+                    if ("amoy" in base_lower) or ("80002" in base_lower) or ("staging" in base_lower) or ("test" in base_lower):
+                        chain_id = 80002
+                except Exception:
+                    pass
+
+                cc = _ClobClient(
+                    host=self.base_url,
+                    key=("0x" + self.signer_private_key),
+                    chain_id=chain_id,
+                    signature_type=self.signature_type,
+                    funder=maker_addr,
+                )
+                oa = _ClobOrderArgs(
+                    price=px,
+                    size=p.size_shares,
+                    side=("BUY" if p.side.upper() == "BUY" else "SELL"),
+                    token_id=str(p.token_id),
+                    fee_rate_bps=int(p.fee_bps),
+                    nonce=int(p.nonce),
+                )
+                signed = cc.create_order(oa)
+                order = signed.dict()
+                return order
+            if _UtilsOrderBuilder and _UtilsSigner and _UtilsOrderData and _to_token_decimals:
+                # Infer chain id from base_url; default to Polygon mainnet (137)
+                chain_id = 137
+                try:
+                    base_lower = (self.base_url or "").lower()
+                    if ("amoy" in base_lower) or ("80002" in base_lower) or ("staging" in base_lower) or ("test" in base_lower):
+                        chain_id = 80002
+                except Exception:
+                    pass
+
+                maker_amt_tokens = _to_token_decimals(float(maker_amount) / 1_000_000.0)
+                taker_amt_tokens = _to_token_decimals(float(taker_amount) / 1_000_000.0)
+
+                data = _UtilsOrderData(
+                    maker=maker_addr,
+                    taker="0x0000000000000000000000000000000000000000",
+                    tokenId=str(p.token_id),
+                    makerAmount=str(maker_amt_tokens),
+                    takerAmount=str(taker_amt_tokens),
+                    side=int(side_int),
+                    feeRateBps=str(int(p.fee_bps)),
+                    nonce=str(int(p.nonce)),
+                    signer=signer_addr,
+                    expiration=str(int(p.expiration_unix)),
+                    signatureType=int(self.signature_type),
+                )
+                ob = _UtilsOrderBuilder(exchange, chain_id, _UtilsSigner(key="0x" + self.signer_private_key))
+                signed = ob.build_signed_order(data)
+                order = signed.dict()
+                return order
+        except Exception:
+            pass
+
+        # IMPORTANT: Match official EIP-712 Order schema (no exchangeAddr in message).
         typed = {
             "types": {
                 "EIP712Domain": [
@@ -356,14 +538,14 @@ class PolyTradingClient:
                     {"name": "nonce", "type": "uint256"},
                     {"name": "feeRateBps", "type": "uint256"},
                     {"name": "side", "type": "uint8"},
-                    {"name": "exchangeAddr", "type": "address"},
+                    {"name": "signatureType", "type": "uint8"},
                 ],
             },
             "primaryType": "Order",
             "domain": {
-                "name": "Polymarket Exchange",
+                "name": "Polymarket CTF Exchange",
                 "version": "1",
-                "chainId": 137,
+                "chainId": chain_id,
                 "verifyingContract": exchange,
             },
             "message": {
@@ -378,7 +560,7 @@ class PolyTradingClient:
                 "nonce": int(p.nonce),
                 "feeRateBps": int(p.fee_bps),
                 "side": side_int,
-                "exchangeAddr": exchange,
+                "signatureType": int(self.signature_type),
             },
         }
         try:
@@ -387,12 +569,7 @@ class PolyTradingClient:
             pass
         sig = _eip712_encode_and_sign(typed, self.signer_private_key)
 
-        if len(sig) == 132:
-            v_hex = sig[130:132]
-            v = int(v_hex, 16)
-            if v >= 27:
-                v -= 27
-                sig = sig[:130] + f"{v:02x}"
+        # keep v as 27/28 as produced by signer; alternate variants adjust later if needed
 
         order = {
             "salt": str(salt_value),
@@ -408,7 +585,6 @@ class PolyTradingClient:
             "side": p.side.upper(),
             "signatureType": self.signature_type,
             "signature": sig,
-            "exchangeAddr": exchange,
         }
         return order
 
@@ -551,19 +727,13 @@ class PolyTradingClient:
         return last_status, last_text
 
     def cancel_order(self, order_id: Optional[str] = None, client_id: Optional[str] = None) -> Tuple[int, str]:
-        path = "/order/cancel"
-        payloads = []
+        # Single order cancel: DELETE /order with body {"orderID": id}
         if order_id:
-            payloads.append({"orderId": order_id, "owner": self.api_key})
-            payloads.append({"order_id": order_id, "owner": self.api_key})
-        if client_id:
-            payloads.append({"client_id": client_id, "owner": self.api_key})
-
-        last_status, last_text = 0, ""
-        for body in payloads or [{"owner": self.api_key}]:
+            path = "/order"
+            body = {"orderID": order_id}
             body_str = json.dumps(body, separators=(",", ":"))
             ts = str(int(time.time()))
-            sig = self._l2_signature(ts, "POST", path, body_str)
+            sig = self._l2_signature(ts, "DELETE", path, body_str)
             url = f"{self.base_url}{path}"
             headers = {
                 "POLY_API_KEY": self.api_key,
@@ -573,15 +743,16 @@ class PolyTradingClient:
                 "POLY_SIGNATURE": sig,
                 "Content-Type": "application/json",
             }
-            r = self.http.post(url, headers=headers, data=body_str, timeout=20)
-            last_status, last_text = r.status_code, r.text
-            if r.ok:
-                break
-        return last_status, last_text
+            r = self.http.delete(url, headers=headers, data=body_str, timeout=20)
+            return r.status_code, r.text
+
+        # Client-id based cancel not directly supported via public endpoint; return 400-like message
+        return 400, "client_id cancellation not supported; provide order_id"
 
     def get_order_status(self, order_id: str) -> Tuple[int, str]:
+        # Preferred single-order endpoint
         ts = str(int(time.time()))
-        path = f"/order/{order_id}"
+        path = f"/data/order/{order_id}"
         sig = self._l2_signature(ts, "GET", path)
         headers = {
             "POLY_API_KEY": self.api_key,
@@ -595,7 +766,8 @@ class PolyTradingClient:
         if r.status_code != 404:
             return r.status_code, r.text
 
-        path = f"/orders?ids={order_id}"
+        # Fallback: list orders filtered by id
+        path = f"/data/orders?id={order_id}"
         ts = str(int(time.time()))
         sig = self._l2_signature(ts, "GET", path)
         headers["POLY_TIMESTAMP"] = ts
